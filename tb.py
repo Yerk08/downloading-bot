@@ -12,13 +12,13 @@ token = "<your code>"
 
 timeupd = 600
 useupd = True
-adminpass = "<admin's password>"
+adminpass = "<your password>"
 
-MAXSIZE = 52424704
+MAXSIZE = 2000 * 1024 * 1024 - 16384
 MAXMESSAGESIZE = 4096
 torrentIP = "http://localhost:8080"
 
-bot = telebot.TeleBot(token)
+bot = telebot.TeleBot(token, num_threads = 30)
 
 def get_size_format(b, factor=1024, suffix="B"):
     """
@@ -33,32 +33,17 @@ def get_size_format(b, factor=1024, suffix="B"):
         b /= factor
     return f"{b:.2f}Y{suffix}"
 
-class MinecraftRcon:
-    def __init__(self, way):
-        self.way = way
-        self.prog = Popen(way, shell=True, stdout=PIPE, stdin=PIPE)
-    def read(self):
-        try:
-            return self.prog.stdout.readline().decode(encoding="utf-8").strip()
-        except:
-            return ""
-    def write(self, mes):
-        try:
-            self.prog.stdin.write(mes.encode(encoding="utf-8"))
-            self.prog.stdin.flush()
-        except:
-            pass
 
 def init():
-    global DATA, qbittorrentclient, minecraftcon, minecraftcon_2
-    if os.path.exists("/minecraft_servers/datafile.dat"):
-        DATA = load(open("/minecraft_servers/datafile.dat", 'rb'))
+    global DATA, qbittorrentclient, minecraftconread, minecraftconwrite
+    if os.path.exists("/telegram_bots/datafile.dat"):
+        DATA = load(open("/telegram_bots/datafile.dat", 'rb'))
     else:
         DATA = dict()
     def autosave():
         while True:
             sleep(timeupd)
-            dump(DATA, open("/minecraft_servers/datafile.dat", 'wb'))
+            dump(DATA, open("/telegram_bots/datafile.dat", 'wb'))
     if useupd:
         thr = Thread(target=autosave)
         thr.daemon = True
@@ -76,30 +61,53 @@ def init():
         DATA["loginpass"]=''.join(map(chr,[rand(ord('A'),ord('Z')) for i in range(12)]))
     qbittorrentclient = qClient(torrentIP)
     print("Connect torrent (None - good):", qbittorrentclient.login("admin", adminpass))
-    if os.path.exists("/minecraft_servers/world/session.lock"):
-        os.remove("/minecraft_servers/world/session.lock")
-    minecraftcon = MinecraftRcon("cd /minecraft_servers/ && java -Xmx6G -jar craftbukkit-1.20.2.jar nogui")
-    print("Minecraft - ok")
+    if os.path.exists("/minecraft_servers/1.20.4/world/session.lock"):
+        os.remove("/minecraft_servers/1.20.4/world/session.lock") 
+    def minecraftstartwrite():
+        global minecraftconwrite
+        minecraftconwrite = None
+        minecraftconwrite = open("/minecraft_servers/1.20.4/pipe_in", 'a')
+        print("Minecraft write - ok")
     if not "mineadmins" in DATA:
         DATA["mineadmins"] = set()
     def mineserversender():
+        global minecraftconread
+        minecraftconread = open("/minecraft_servers/1.20.4/pipe_out", 'r')
+        print("Minecraft read - ok")
+        messend = ""
         while True:
-            mes = minecraftcon.read()
+            try:
+                mes = minecraftconread.readline()
+            except:
+                break
+            os.set_blocking(minecraftconread.fileno(), False)
             if not "[STDERR/]" in mes: #Just a lot of errors
-                try:
-                    for admin in DATA["mineadmins"]:
-                        try:
-                            bot.send_message(admin, mes)
-                        except:
-                            pass
-                except:
-                    pass
-            if mes=="":
-                sleep(2)
+                if mes == "" and messend == "":
+                    os.set_blocking(minecraftconread.fileno(), True)
+                elif len(messend + mes) < MAXMESSAGESIZE and mes != "":
+                    messend = messend + mes
+                else:
+                    try:
+                        for admin in DATA["mineadmins"]:
+                            try:
+                                bot.send_message(admin, messend)
+                            except:
+                                pass
+                        messend = ""
+                    except:
+                        pass
+                    if len(messend + mes) < MAXMESSAGESIZE and mes != "":
+                        messend = messend + mes
 
-    thr = Thread(target = mineserversender)
-    thr.daemon = True
-    thr.start()
+    # -- Uncomment for minecraft work --
+    #thrr = Thread(target = mineserversender)
+    #thrr.daemon = True
+    #thrr.start()
+    #thrw = Thread(target = minecraftstartwrite)
+    #thrw.daemon = True
+    #thrw.start()
+
+
 
 @bot.message_handler()
 def start_message(message):
@@ -108,7 +116,6 @@ def start_message(message):
         DATA["usersNOW"][message.chat.id]="None"
 
     if DATA["usersNOW"][message.chat.id]=="None":
-
 
         if message.text=="/login":
             if not message.chat.id in DATA["usersLogin"]:
@@ -272,6 +279,12 @@ def start_message(message):
             else:
                 DATA["usersNOW"][message.chat.id]="file_download_disk"
                 bot.send_message(message.chat.id, "Теперь введите ссылку на файл")
+        elif message.text=="/downloaddirdrive":
+            if not message.chat.id in DATA["usersLogin"]:
+                bot.send_message(message.chat.id, "Вы должны зайти чтобы использовать это")
+            else:
+                DATA["usersNOW"][message.chat.id]="dir_download_disk"
+                bot.send_message(message.chat.id, "Теперь введите ссылку на папку")
         elif message.text=="/downloadmagnet":
             if not message.chat.id in DATA["usersLogin"]:
                 bot.send_message(message.chat.id, "Вы должны зайти чтобы использовать это")
@@ -288,7 +301,7 @@ def start_message(message):
 Лично для удобства админов - /admin
 """)
         else:
-            bot.send_message(message.chat.id, "Чтобы скачать что-либо нужно использовать\n/downloadfile для скачивания файла\n/downloadtext для скачивания сайта\n/downloadfiledrive для скачивания файла с внутреннего диска бота\n/downloadmagnet для скачивания с magnet ссылки\n\nЛично для удобства админов - /admin")
+            bot.send_message(message.chat.id, "Чтобы скачать что-либо нужно использовать\n/downloadfile для скачивания файла\n/downloadtext для скачивания сайта\n/downloadfiledrive для скачивания файла с внутреннего диска бота\n/downloaddirdrive для скачивания папки по очереди с внутреннего диска бота\n/downloadmagnet для скачивания с magnet ссылки\n\nЛично для удобства админов - /admin")
 
     elif DATA["usersNOW"][message.chat.id] == "write_code":
         DATA["usersNOW"][message.chat.id] = "None"
@@ -337,7 +350,10 @@ def start_message(message):
         number = ''.join(map(chr,[rand(ord('0'), ord('9')) for i in range(5)]))
         bot.send_message(message.chat.id, "Ждите, ваш талон - " + number)
         try:
-            bot.send_document(message.chat.id, bytes(get(link).text, encoding="utf-8"), visible_file_name = "page" + number + ".html")
+            if link[:4] == "http":
+                bot.send_document(message.chat.id, bytes(get(link).text, encoding="utf-8"), visible_file_name = "page" + number + ".html")
+            else:
+                bot.send_message(message.chat.id, "Невозможно загрузить файл с талоном " + number)
         except:
             bot.send_message(message.chat.id, "Не удалось загрузить файл с талоном " + number)
 
@@ -347,23 +363,31 @@ def start_message(message):
         
         number = ''.join(map(chr,[rand(ord('0'), ord('9')) for i in range(5)]))
         bot.send_message(message.chat.id, "Ждите, ваш талон - " + number)
-        try:
-            file_data = get(link).content
+        file_data = None
+        if link[:4] == "http":
+            try:
+                file_data = get(link).content
+            except:
+                pass
+        if file_data != None and len(file_data) > 0:
             if len(file_data) < MAXSIZE:
                 bot.send_document(message.chat.id, file_data, visible_file_name = "file" + number + "." + link.split('.')[-1])
             else:
                 bot.send_message(message.chat.id, "Файл с талоном "+number+" превышает телеграммовский размер, так что отсылаю частями:")
                 if not message.chat.id in DATA["hasFP"]:
-                    bot.send_document(message.chat.id, open("/minecraft_servers/fp.zip", 'rb').read(), visible_file_name = "fb.zip", caption = "Эта утилита поможет вам восстановить файл, нужно лишь сделать так:\n.\\fileparter -n <количество_частей> -f название файла без part0/1/2... --torecieve -B 1000000")
+                    bot.send_document(message.chat.id, open("/telegram_bots/fp.zip", 'rb').read(), visible_file_name = "fb.zip", caption = "Эта утилита поможет вам восстановить файл, нужно лишь сделать так:\n.\\fileparter -n <количество_частей> -f название файла без part0/1/2... --torecieve -B 1000000")
                     DATA["hasFP"].add(message.chat.id)
                     sleep(1.5)
                 i=0
                 while i < len(file_data):
-                    bot.send_document(message.chat.id, file_data[i:i+MAXSIZE], visible_file_name = "file" + number + "." + link.split('.')[-1] + "part" + str(i//MAXSIZE))
+                    try:
+                        bot.send_document(message.chat.id, file_data[i:i+MAXSIZE], visible_file_name = "file" + number + "." + link.split('.')[-1] + "part" + str(i//MAXSIZE))
+                    except:
+                        pass
                     i += MAXSIZE
-                    sleep(8)
+                    sleep((len(file_data) + 1) / (50 * 1024 * 1024) * 4)
                 bot.send_message(message.chat.id, "Файл с талоном "+number+" отправился успешно")
-        except:
+        else:
             bot.send_message(message.chat.id, "Не удалось загрузить файл с талоном " + number)
 
     elif DATA["usersNOW"][message.chat.id] == "file_download_disk":
@@ -375,29 +399,62 @@ def start_message(message):
         
             number = ''.join(map(chr,[rand(ord('0'), ord('9')) for i in range(5)]))
             bot.send_message(message.chat.id, "Ждите, ваш талон - " + number)
+            file_self = None
             try:
-                file_data = open("/minecraft_servers/files/"+link, 'rb').read()
-                if len(file_data) < MAXSIZE:
+                file_self = open("/telegram_bots/files/"+link, 'rb')
+            except:
+                bot.send_message(message.chat.id, "Не удалось загрузить файл с талоном " + number + ", его не существует")
+            if file_self != None:
+                file_data = file_self.read(MAXSIZE)
+                if os.stat("/telegram_bots/files/"+link).st_size <= MAXSIZE:
                     bot.send_document(message.chat.id, file_data, visible_file_name = "file" + number + "." + link.split('.')[-1])
                 else:
                     bot.send_message(message.chat.id, "Файл с талоном "+number+" превышает телеграммовский размер, так что отсылаю частями:")
                     if not message.chat.id in DATA["hasFP"]:
-                        bot.send_document(message.chat.id, open("/minecraft_servers/fp.zip", 'rb').read(), visible_file_name = "fb.zip", caption = "Эта утилита поможет вам восстановить файл, нужно лишь сделать так:\n.\\fileparter -n <количество_частей> -f название файла без part0/1/2... --torecieve -B 1000000")
+                        bot.send_document(message.chat.id, open("/telegram_bots/fp.zip", 'rb').read(), visible_file_name = "fb.zip", caption = "Эта утилита поможет вам восстановить файл, нужно лишь сделать так:\n.\\fileparter -n <количество_частей> -f название файла без part0/1/2... --torecieve -B 1000000")
                         DATA["hasFP"].add(message.chat.id)
                         sleep(1.5)
                     i=0
-                    while i < len(file_data):
-                        bot.send_document(message.chat.id, file_data[i:i+MAXSIZE], visible_file_name = "file" + number + "." + link.split('.')[-1] + "part" + str(i//MAXSIZE))
-                        i += MAXSIZE
-                        sleep(8)
+                    while file_data:
+                        try:
+                            bot.send_document(message.chat.id, file_data, visible_file_name = "file" + number + "." + link.split('.')[-1] + "part" + (str(i).rjust(6).replace(' ', '0')))
+                        except:
+                            pass
+                        i += 1
+                        sleep((len(file_data) + 1) / (50 * 1024 * 1024)) # * i)
+                        file_data = file_self.read(MAXSIZE // 4)
                     bot.send_message(message.chat.id, "Файл с талоном "+number+" отправился успешно")
-            except:
-                bot.send_message(message.chat.id, "Не удалось загрузить файл с талоном " + number)
+    
+    elif DATA["usersNOW"][message.chat.id] == "dir_download_disk":
+        DATA["usersNOW"][message.chat.id] = "None"
+        linkdir = message.text.strip()
+        if '..' in linkdir or '~' in linkdir:
+            bot.send_message(message.chat.id, "Вам запрещено скачивать данную папку")
+        else:
+            files_list = []
+            for root, dirs, files in os.walk("/telegram_bots/files/"+linkdir):  
+                files_list += [root[len("/telegram_bots/files/"):].replace('\\', '/') + "/" + x for x in files]
+            bot.send_message(message.chat.id, "Идет загрузка папки " + linkdir + " всего файлов " + str(len(files_list)))
+            for link in files_list:
+                number = ''.join(map(chr,[rand(ord('0'), ord('9')) for i in range(5)]))
+                bot.send_message(message.chat.id, "Талон файла " + link + " - " + number)
+                file_self = None
+                try:
+                    file_self = open("/telegram_bots/files/"+link, 'rb')
+                except:
+                    bot.send_message(message.chat.id, "Не удалось загрузить файл с талоном " + number + ", внутренний сбой")
+                if file_self != None:
+                    file_data = file_self.read(MAXSIZE)
+                    if os.stat("/telegram_bots/files/"+link).st_size <= MAXSIZE:
+                        bot.send_document(message.chat.id, file_data, visible_file_name = "file" + number + "." + link.split('.')[-1])
+                    else:
+                        bot.send_message(message.chat.id, "Файл с талоном "+number+" превышает телеграммовский размер, попробуйте отправить обычным способом")
+                    sleep((len(file_data) + 1) / (50 * 1024 * 1024) * 4)
 
     elif DATA["usersNOW"][message.chat.id] == "magnet_download":
         DATA["usersNOW"][message.chat.id] = "None"
         link = message.text.strip()
-        if '..' in link:
+        if '..' in link or '~' in link:
             bot.send_message(message.chat.id, "Вам запрещено скачивать данный файл")
         else:
             number = ''.join(map(chr,[rand(ord('0'), ord('9')) for i in range(5)]))
@@ -412,8 +469,8 @@ def start_message(message):
                     bot.send_message(message.chat.id, "Талон " + number + " скачался")
 
                     files_list = []
-                    for root, dirs, files in os.walk("/minecraft_servers/files/"+hsh):  
-                        files_list += [root[len("/minecraft_servers/files/"):].replace('\\', '/') + "/" + x for x in files]
+                    for root, dirs, files in os.walk("/telegram_bots/files/"+hsh):  
+                        files_list += [root[len("/telegram_bots/files/"):].replace('\\', '/') + "/" + x for x in files]
                     towrite = "Список файлов талона " + number + ":\n"+'\n'.join(files_list)
                     i=0
                     while i<len(towrite):
@@ -444,12 +501,7 @@ def start_message(message):
         if message.text.strip() == "да":
             DATA["usersNOW"][message.chat.id] = "None"
             bot.send_message(message.chat.id, str(qbittorrentclient.delete_all_permanently()))
-            g = os.listdir("files/")
-            for x in g:
-                try:
-                    os.rmdir("files/" + x)
-                except:
-                    pass
+            os.system("rmdir /telegram_bots/files/*")
         else:
             DATA["usersNOW"][message.chat.id] = "None"
             bot.send_message(message.chat.id, "Отменено")
@@ -484,15 +536,17 @@ def start_message(message):
         DATA["usersNOW"][message.chat.id] = "None"
         if message.text.strip() == "/back":
             bot.send_message(message.chat.id, "Отменено")
-        else:
-            minecraftcon.write(message.text.strip() + "\n")
+        elif minecraftconwrite != None:
+            minecraftconwrite.write(message.text.strip() + "\n")
+            minecraftconwrite.flush()
 
     elif DATA["usersNOW"][message.chat.id] == "minecraftcommandsendermode":
         if message.text.strip() == "/back":
             DATA["usersNOW"][message.chat.id] = "None"
             bot.send_message(message.chat.id, "Завершено")
-        else:
-            minecraftcon.write(message.text.strip() + "\n")
+        elif minecraftconwrite != None:
+            minecraftconwrite.write(message.text.strip() + "\n")
+            minecraftconwrite.flush()
 
 init()
 bot.infinity_polling()
